@@ -852,29 +852,41 @@ questoes_variaveis_base() {
   echo
   # DEFINE LINK REPO GITHUB
   banner
-  printf "${WHITE} >> Digite a URL do repositório privado no GitHub: \n"
+  printf "${WHITE} >> Digite a URL do repositório Git (ex.: GitHub, GitLab): \n"
   echo
   read -p "> " repo_url
   echo
   
-  # Validar que o repositório é o correto
-  repo_url_limpo=$(echo "${repo_url}" | sed 's|https://||' | sed 's|http://||' | sed 's|\.git$||' | sed 's|/$||')
-  repo_esperado="github.com/scriptswhitelabel/multiflow"
-  
-  if [ "${repo_url_limpo}" != "${repo_esperado}" ]; then
+  # Validar que a URL parece ser um repositório Git válido (aceita qualquer repo: GitHub, GitLab, etc.)
+  repo_url_limpo=$(echo "${repo_url}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  if [ -z "${repo_url_limpo}" ]; then
     printf "${RED}══════════════════════════════════════════════════════════════════${WHITE}\n"
-    printf "${RED}❌ ERRO: Repositório inválido!${WHITE}\n"
+    printf "${RED}❌ ERRO: URL do repositório não pode estar vazia!${WHITE}\n"
+    printf "${RED}══════════════════════════════════════════════════════════════════${WHITE}\n"
     echo
-    printf "${YELLOW}   O repositório deve ser exatamente:${WHITE}\n"
-    printf "${BLUE}   https://github.com/scriptswhitelabel/multiflow${WHITE}\n"
-    printf "${BLUE}   ou${WHITE}\n"
-    printf "${BLUE}   https://github.com/scriptswhitelabel/multiflow.git${WHITE}\n"
+    sleep 5
+    exit 1
+  fi
+  if ! [[ "${repo_url_limpo}" =~ ^https?:// ]] && ! [[ "${repo_url_limpo}" =~ ^git@ ]]; then
+    printf "${RED}══════════════════════════════════════════════════════════════════${WHITE}\n"
+    printf "${RED}❌ ERRO: URL do repositório inválida!${WHITE}\n"
+    echo
+    printf "${YELLOW}   Use uma URL HTTPS (https://...) ou SSH (git@...).${WHITE}\n"
+    printf "${YELLOW}   Exemplos:${WHITE}\n"
+    printf "${BLUE}   https://github.com/usuario/repositorio.git${WHITE}\n"
+    printf "${BLUE}   git@github.com:usuario/repositorio.git${WHITE}\n"
     echo
     printf "${RED}   Repositório informado: ${repo_url}${WHITE}\n"
     printf "${RED}══════════════════════════════════════════════════════════════════${WHITE}\n"
     echo
     sleep 5
     exit 1
+  fi
+  # Normalizar para uso posterior (garantir .git no final para clone, se for HTTPS)
+  if [[ "${repo_url_limpo}" =~ ^https?:// ]] && [[ "${repo_url_limpo}" != *.git ]]; then
+    repo_url="${repo_url_limpo}.git"
+  else
+    repo_url="${repo_url_limpo}"
   fi
   
   # Selecionar versão
@@ -1705,7 +1717,10 @@ codifica_clone_base() {
 # Definir versões disponíveis para instalação
 definir_versoes_instalacao() {
   declare -gA VERSOES_INSTALACAO
-
+  VERSOES_INSTALACAO["6.5.2"]="6607976a25f86127bd494bba20017fe6bbd9f50a"
+  VERSOES_INSTALACAO["6.5"]="ab5565df5937f6113bbbb6b2ce9c526e25e525ef"
+  VERSOES_INSTALACAO["6.4.4"]="b5de35ebb4acb10694ce4e8b8d6068b31eeabef9"
+  VERSOES_INSTALACAO["6.4.3"]="6aa224db151bd8cbbf695b07a8624c976e89db00"
 }
 
 # Mostrar lista de versões disponíveis para instalação
@@ -2554,14 +2569,20 @@ EOF
 
     sleep 2
 
-    sudo su - deploy <<'RESTARTPM2'
+    sudo su - deploy <<RESTARTPM2
   # Configura PATH para Node.js e PM2
   if [ -d /usr/local/n/versions/node/20.19.4/bin ]; then
-    export PATH=/usr/local/n/versions/node/20.19.4/bin:/usr/bin:/usr/local/bin:$PATH
+    export PATH=/usr/local/n/versions/node/20.19.4/bin:/usr/bin:/usr/local/bin:\$PATH
   else
-    export PATH=/usr/bin:/usr/local/bin:$PATH
+    export PATH=/usr/bin:/usr/local/bin:\$PATH
   fi
-  pm2 restart all
+  # Reiniciar apenas processos PM2 relacionados à empresa específica
+  # Detecta todos os processos que começam com o nome da empresa (independente do sufixo)
+  pm2 list | grep "${empresa}-" | awk '{print \$2}' | while read process_name; do
+    if [ -n "\$process_name" ] && [ "\$process_name" != "name" ]; then
+      pm2 restart "\$process_name" 2>/dev/null || true
+    fi
+  done
 RESTARTPM2
 
     sleep 2
@@ -2589,7 +2610,12 @@ fim_instalacao_base() {
 ################################################################
 
 backup_app_atualizar() {
-  carregar_variaveis
+  # Verifica se a variável empresa está definida (já foi carregada por selecionar_instancia_atualizar)
+  if [ -z "${empresa}" ]; then
+    printf "${RED} >> ERRO: Variável 'empresa' não está definida!\n${WHITE}"
+    exit 1
+  fi
+  
   source /home/deploy/${empresa}/backend/.env
   {
     banner
@@ -2625,17 +2651,24 @@ baixa_codigo_atualizar() {
   sleep 2
 
   banner
-  printf "${WHITE} >> Parando Instancias... \n"
+  printf "${WHITE} >> Parando Instancias da empresa ${empresa}... \n"
   echo
   sleep 2
-  sudo su - deploy <<'STOPPM2'
+  sudo su - deploy <<STOPPM2
   # Configura PATH para Node.js e PM2
   if [ -d /usr/local/n/versions/node/20.19.4/bin ]; then
-    export PATH=/usr/local/n/versions/node/20.19.4/bin:/usr/bin:/usr/local/bin:$PATH
+    export PATH=/usr/local/n/versions/node/20.19.4/bin:/usr/bin:/usr/local/bin:\$PATH
   else
-    export PATH=/usr/bin:/usr/local/bin:$PATH
+    export PATH=/usr/bin:/usr/local/bin:\$PATH
   fi
-  pm2 stop all
+  # Parar apenas processos PM2 relacionados à empresa específica
+  # Detecta todos os processos que começam com o nome da empresa (independente do sufixo)
+  # Não afeta processos de outras instâncias
+  pm2 list | grep "${empresa}-" | awk '{print \$2}' | while read process_name; do
+    if [ -n "\$process_name" ] && [ "\$process_name" != "name" ]; then
+      pm2 stop "\$process_name" 2>/dev/null || true
+    fi
+  done
 STOPPM2
 
   sleep 2
@@ -2644,8 +2677,14 @@ STOPPM2
 
   verificar_e_adicionar_max_buffer
 
+  # Verifica se a variável empresa está definida (já foi carregada por selecionar_instancia_atualizar)
+  if [ -z "${empresa}" ]; then
+    printf "${RED} >> ERRO: Variável 'empresa' não está definida!\n${WHITE}"
+    exit 1
+  fi
+  
   banner
-  printf "${WHITE} >> Atualizando a Aplicação... \n"
+  printf "${WHITE} >> Atualizando a Aplicação da Empresa ${empresa}... \n"
   echo
   sleep 2
 
@@ -2669,7 +2708,7 @@ STOPPM2
     exit 1
   fi
   
-  printf "${WHITE} >> Atualizando Backend...\n"
+  printf "${WHITE} >> Atualizando Backend da empresa ${empresa}...\n"
   echo
   cd "\$APP_DIR"
   git fetch origin
@@ -2697,12 +2736,12 @@ STOPPM2
   npm i glob
   npm run build
   sleep 2
-  printf "${WHITE} >> Atualizando Banco...\n"
+  printf "${WHITE} >> Atualizando Banco da empresa ${empresa}...\n"
   echo
   sleep 2
   npx sequelize db:migrate
   sleep 2
-  printf "${WHITE} >> Atualizando Frontend...\n"
+  printf "${WHITE} >> Atualizando Frontend da empresa ${empresa}...\n"
   echo
   sleep 2
   
@@ -2727,11 +2766,14 @@ STOPPM2
   
   NODE_OPTIONS="--max-old-space-size=4096 --openssl-legacy-provider" npm run build
   sleep 2
-  pm2 flush
-  pm2 reset all
-  pm2 restart all
+  # Reiniciar apenas processos PM2 relacionados à empresa específica
+  # Detecta todos os processos que começam com o nome da empresa (independente do sufixo)
+  pm2 list | grep "${empresa}-" | awk '{print \$2}' | while read process_name; do
+    if [ -n "\$process_name" ] && [ "\$process_name" != "name" ]; then
+      pm2 restart "\$process_name" 2>/dev/null || true
+    fi
+  done
   pm2 save
-  pm2 startup
 UPDATEAPP
 
   sudo su - root <<EOF
@@ -2752,8 +2794,14 @@ EOF
 }
 
 otimiza_banco_atualizar() {
+  # Verifica se a variável empresa está definida (já foi carregada por selecionar_instancia_atualizar)
+  if [ -z "${empresa}" ]; then
+    printf "${RED} >> ERRO: Variável 'empresa' não está definida!\n${WHITE}"
+    return 0
+  fi
+  
   banner
-  printf "${WHITE} >> Realizando Manutenção do Banco de Dados... \n"
+  printf "${WHITE} >> Realizando Manutenção do Banco de Dados da empresa ${empresa}... \n"
   echo
   {
     db_password=$(grep "DB_PASS=" /home/deploy/${empresa}/backend/.env | cut -d '=' -f2)
@@ -2769,7 +2817,11 @@ EOF
 
 # Verificar e adicionar MAX_BUFFER_SIZE_MB no .env do backend
 verificar_e_adicionar_max_buffer() {
-  carregar_variaveis
+  # Verifica se a variável empresa está definida (já foi carregada por selecionar_instancia_atualizar)
+  if [ -z "${empresa}" ]; then
+    printf "${RED} >> ERRO: Variável 'empresa' não está definida!\n${WHITE}"
+    return 0
+  fi
   
   ENV_FILE="/home/deploy/${empresa}/backend/.env"
   
@@ -2897,6 +2949,151 @@ instalar_transcricao_audio_nativa() {
   fi
   
   printf "${GREEN} >> Porta selecionada: ${BLUE}${porta_transcricao}${WHITE}\n"
+  echo
+  sleep 2
+  
+  # Instalar bibliotecas compartilhadas do ffmpeg necessárias para transcrição
+  banner
+  printf "${WHITE} >> Instalando bibliotecas compartilhadas do ffmpeg...\n"
+  echo
+  
+  {
+    sudo apt-get update -qq
+    
+    # Verificar se o ffmpeg está instalado, se não estiver, instalar
+    if ! command -v ffmpeg >/dev/null 2>&1; then
+      printf "${YELLOW} >> FFmpeg não encontrado. Instalando...${WHITE}\n"
+      sudo apt-get install -y ffmpeg
+    fi
+    
+    printf "${WHITE} >> Verificando dependências do ffmpeg instalado...${WHITE}\n"
+    
+    # Verificar quais bibliotecas o ffmpeg precisa usando ldd
+    FFMPEG_PATH=$(which ffmpeg)
+    if [ -n "$FFMPEG_PATH" ] && [ -f "$FFMPEG_PATH" ]; then
+      printf "${WHITE} >> Analisando dependências de: $FFMPEG_PATH${WHITE}\n"
+      MISSING_LIBS=$(ldd "$FFMPEG_PATH" 2>/dev/null | grep "not found" | awk '{print $1}' | sed 's/://' || true)
+      
+      if [ -n "$MISSING_LIBS" ]; then
+        printf "${YELLOW} >> Bibliotecas faltantes detectadas:${WHITE}\n"
+        echo "$MISSING_LIBS" | while read lib; do
+          printf "${YELLOW}   - $lib${WHITE}\n"
+        done
+        
+        # Extrair versão da biblioteca faltante e tentar instalar
+        for lib in $MISSING_LIBS; do
+          if echo "$lib" | grep -qE "libav(device|format|codec)"; then
+            # Extrair número da versão (ex: libavdevice.so.62 -> 62)
+            VERSION=$(echo "$lib" | grep -oE '[0-9]+' | head -1)
+            LIB_NAME=$(echo "$lib" | sed 's/\.so.*//' | sed 's/lib//')
+            
+            if [ -n "$VERSION" ] && [ -n "$LIB_NAME" ]; then
+              printf "${WHITE} >> Tentando instalar $LIB_NAME versão $VERSION...${WHITE}\n"
+              # Tentar diferentes formatos de nome de pacote
+              sudo apt-get install -y "lib${LIB_NAME}${VERSION}" 2>/dev/null || \
+              sudo apt-get install -y "lib${LIB_NAME}${VERSION:0:2}" 2>/dev/null || \
+              sudo apt-get install -y "lib${LIB_NAME}" 2>/dev/null || true
+            fi
+          fi
+        done
+      fi
+    fi
+    
+    printf "${WHITE} >> Instalando todas as bibliotecas do ffmpeg...${WHITE}\n"
+    
+    # Primeiro, tentar corrigir dependências quebradas
+    sudo apt-get install -f -y 2>/dev/null || true
+    
+    # Instalar ffmpeg e todas suas dependências de uma vez
+    sudo apt-get install --reinstall -y ffmpeg 2>/dev/null || true
+    
+    # Instalar bibliotecas específicas - tentar todas as versões possíveis
+    printf "${WHITE} >> Instalando bibliotecas libavdevice, libavformat e libavcodec (todas as versões)...${WHITE}\n"
+    
+    # Instalar todas as versões disponíveis (não usar elif, instalar todas que estiverem disponíveis)
+    sudo apt-get install -y \
+      libavdevice58 libavformat58 libavcodec58 \
+      libavdevice59 libavformat59 libavcodec59 \
+      libavdevice60 libavformat60 libavcodec60 \
+      libavdevice61 libavformat61 libavcodec61 \
+      libavdevice62 libavformat62 libavcodec62 \
+      libavdevice63 libavformat63 libavcodec63 \
+      libavdevice libavformat libavcodec \
+      2>/dev/null || true
+    
+    # Instalar pacotes de desenvolvimento também (podem conter as bibliotecas necessárias)
+    sudo apt-get install -y \
+      libavdevice-dev libavformat-dev libavcodec-dev \
+      libavutil-dev libswscale-dev libswresample-dev \
+      2>/dev/null || true
+    
+    # Adicionar PPA do ffmpeg se disponível (para versões mais recentes)
+    if ! grep -q "ppa:savoury1/ffmpeg" /etc/apt/sources.list.d/*.list 2>/dev/null; then
+      printf "${WHITE} >> Adicionando PPA do ffmpeg para versões mais recentes...${WHITE}\n"
+      sudo add-apt-repository -y ppa:savoury1/ffmpeg5 2>/dev/null || \
+      sudo add-apt-repository -y ppa:savoury1/ffmpeg6 2>/dev/null || true
+      sudo apt-get update -qq 2>/dev/null || true
+      
+      # Tentar instalar novamente após adicionar o PPA
+      sudo apt-get install -y \
+        libavdevice62 libavformat62 libavcodec62 \
+        libavdevice63 libavformat63 libavcodec63 \
+        2>/dev/null || true
+    fi
+    
+    # Atualizar cache do ldconfig para que o sistema encontre as bibliotecas
+    printf "${WHITE} >> Atualizando cache de bibliotecas compartilhadas...${WHITE}\n"
+    sudo ldconfig 2>/dev/null || true
+    
+    # Verificar novamente quais bibliotecas o ffmpeg precisa
+    if [ -n "$FFMPEG_PATH" ] && [ -f "$FFMPEG_PATH" ]; then
+      MISSING_LIBS_AFTER=$(ldd "$FFMPEG_PATH" 2>/dev/null | grep "not found" | awk '{print $1}' | sed 's/://' || true)
+      
+      if [ -z "$MISSING_LIBS_AFTER" ]; then
+        printf "${GREEN} >> ✓ Todas as dependências do ffmpeg foram instaladas com sucesso!${WHITE}\n"
+      else
+        printf "${YELLOW} >> AVISO: Ainda há bibliotecas faltantes:${WHITE}\n"
+        echo "$MISSING_LIBS_AFTER" | while read lib; do
+          printf "${YELLOW}   - $lib${WHITE}\n"
+        done
+        
+        # Se ainda faltam bibliotecas, pode ser que o ffmpeg foi instalado do BtbN/FFmpeg-Builds
+        # Nesse caso, precisamos instalar o ffmpeg do repositório do sistema
+        printf "${WHITE} >> O ffmpeg pode ter sido instalado de fonte externa. Reinstalando do repositório do sistema...${WHITE}\n"
+        sudo apt-get remove -y ffmpeg 2>/dev/null || true
+        sudo apt-get install -y ffmpeg 2>/dev/null || true
+        sudo apt-get install -f -y 2>/dev/null || true
+        sudo ldconfig 2>/dev/null || true
+        
+        # Verificar novamente
+        MISSING_LIBS_FINAL=$(ldd "$(which ffmpeg)" 2>/dev/null | grep "not found" | awk '{print $1}' | sed 's/://' || true)
+        if [ -z "$MISSING_LIBS_FINAL" ]; then
+          printf "${GREEN} >> ✓ FFmpeg reinstalado e funcionando!${WHITE}\n"
+        else
+          printf "${RED} >> ERRO: Ainda há bibliotecas faltantes após reinstalação.${WHITE}\n"
+          printf "${YELLOW} >> Bibliotecas faltantes: $MISSING_LIBS_FINAL${WHITE}\n"
+        fi
+      fi
+    fi
+    
+    # Verificação final usando ldconfig
+    if ldconfig -p | grep -q libavdevice && ldconfig -p | grep -q libavformat && ldconfig -p | grep -q libavcodec; then
+      printf "${GREEN} >> ✓ Bibliotecas do ffmpeg verificadas no sistema!${WHITE}\n"
+    else
+      printf "${YELLOW} >> AVISO: Algumas bibliotecas podem não estar no cache do sistema.${WHITE}\n"
+    fi
+    
+    # Teste final: tentar executar o ffmpeg para verificar se funciona
+    if ffmpeg -version >/dev/null 2>&1; then
+      printf "${GREEN} >> ✓ FFmpeg está funcionando corretamente!${WHITE}\n"
+    else
+      printf "${YELLOW} >> AVISO: FFmpeg pode ter problemas. Verifique manualmente.${WHITE}\n"
+    fi
+    
+  } || {
+    printf "${YELLOW} >> AVISO: Algumas bibliotecas podem não ter sido instaladas. Continuando...${WHITE}\n"
+  }
+  
   echo
   sleep 2
   
@@ -3164,6 +3361,200 @@ TEMPSCRIPT
     printf "${GREEN} >> Nome do app PM2 usado automaticamente: ${BLUE}${empresa}-transcricao${WHITE}\n"
     echo
     
+    # Instalar dependências Python após o script de instalação
+    banner
+    printf "${WHITE} >> Verificando e instalando dependências Python...\n"
+    echo
+    
+    # Tentar instalar pip3 primeiro (se não estiver disponível)
+    if ! command -v pip3 &>/dev/null && ! python3 -m pip --version &>/dev/null; then
+      printf "${YELLOW} >> pip3 não está disponível. Tentando instalar via apt-get...${WHITE}\n"
+      if sudo -n apt-get update -qq && sudo -n apt-get install -y python3-pip 2>/dev/null; then
+        printf "${GREEN} >> pip3 instalado com sucesso!${WHITE}\n"
+      else
+        printf "${YELLOW} >> Não foi possível instalar pip3 automaticamente (pode requerer senha)${WHITE}\n"
+        printf "${YELLOW} >> Tentando instalar Flask diretamente via apt-get...${WHITE}\n"
+        if sudo -n apt-get install -y python3-flask python3-flask-cors python3-requests 2>/dev/null; then
+          printf "${GREEN} >> Flask instalado via apt-get!${WHITE}\n"
+        else
+          printf "${RED} >> AVISO: Não foi possível instalar pip3 ou Flask automaticamente${WHITE}\n"
+          printf "${YELLOW} >> Execute manualmente: sudo apt-get install -y python3-pip python3-flask python3-flask-cors${WHITE}\n"
+        fi
+      fi
+    fi
+    
+    # Verificar se Flask está disponível antes de continuar
+    if ! sudo su - deploy -c "python3 -c 'import flask'" 2>/dev/null; then
+      printf "${YELLOW} >> Flask não está disponível. Tentando instalar via apt-get...${WHITE}\n"
+      if sudo -n apt-get install -y python3-flask python3-flask-cors python3-requests 2>/dev/null; then
+        printf "${GREEN} >> Flask instalado via apt-get!${WHITE}\n"
+      else
+        printf "${YELLOW} >> Não foi possível instalar via apt-get sem senha. Continuando...${WHITE}\n"
+      fi
+    fi
+    
+    sudo su - deploy <<INSTALLPYTHONDEP
+    # Configura PATH
+    if [ -d /usr/local/n/versions/node/20.19.4/bin ]; then
+      export PATH=/usr/local/n/versions/node/20.19.4/bin:/usr/bin:/usr/local/bin:\$PATH
+    else
+      export PATH=/usr/bin:/usr/local/bin:\$PATH
+    fi
+    
+    TRANSC_DIR="/home/deploy/${empresa}/api_transcricao"
+    cd "\$TRANSC_DIR" || exit 1
+    
+    # Verificar se pip3 está disponível
+    if ! command -v pip3 &> /dev/null; then
+      printf "${YELLOW} >> pip3 não encontrado. Tentando instalar...${WHITE}\n"
+      
+      # Tentar instalar pip3 usando apt-get (requer sudo, mas tenta sem senha)
+      if sudo -n apt-get install -y python3-pip 2>/dev/null; then
+        printf "${GREEN} >> pip3 instalado com sucesso via apt-get${WHITE}\n"
+      else
+        printf "${YELLOW} >> Não foi possível instalar pip3 via apt-get (pode requerer senha)${WHITE}\n"
+        printf "${YELLOW} >> Tentando métodos alternativos...${WHITE}\n"
+        
+        # Tentar usar python3 -m pip (geralmente disponível mesmo sem pip3 instalado)
+        if python3 -m pip --version &>/dev/null; then
+          printf "${GREEN} >> python3 -m pip está disponível${WHITE}\n"
+          alias pip3="python3 -m pip"
+        else
+          # Tentar instalar pip3 usando get-pip.py (não requer sudo)
+          printf "${YELLOW} >> Tentando instalar pip usando get-pip.py...${WHITE}\n"
+          curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py 2>/dev/null || wget -q https://bootstrap.pypa.io/get-pip.py -O /tmp/get-pip.py 2>/dev/null || true
+          if [ -f /tmp/get-pip.py ]; then
+            python3 /tmp/get-pip.py --user --break-system-packages 2>&1 | grep -v "already installed\|Requirement already satisfied" || true
+            rm -f /tmp/get-pip.py 2>/dev/null || true
+            # Verificar se pip3 está disponível agora
+            if command -v pip3 &>/dev/null || python3 -m pip --version &>/dev/null; then
+              printf "${GREEN} >> pip instalado com sucesso${WHITE}\n"
+              if ! command -v pip3 &>/dev/null; then
+                alias pip3="python3 -m pip"
+              fi
+            fi
+          fi
+        fi
+      fi
+    fi
+    
+    # Se ainda não tiver pip3, usar python3 -m pip como fallback
+    if ! command -v pip3 &> /dev/null && ! python3 -m pip --version &>/dev/null; then
+      printf "${RED} >> ERRO CRÍTICO: pip3 e python3 -m pip não estão disponíveis!${WHITE}\n"
+      printf "${YELLOW} >> Instalando pip3 manualmente...${WHITE}\n"
+      printf "${YELLOW} >> Execute manualmente: sudo apt-get install -y python3-pip${WHITE}\n"
+      printf "${YELLOW} >> Ou instale Flask via apt: sudo apt-get install -y python3-flask${WHITE}\n"
+      
+      # Tentar instalar Flask via apt-get como último recurso
+      if sudo -n apt-get install -y python3-flask python3-flask-cors 2>/dev/null; then
+        printf "${GREEN} >> Flask instalado via apt-get${WHITE}\n"
+      else
+        printf "${RED} >> Não foi possível instalar Flask automaticamente${WHITE}\n"
+        printf "${RED} >> Por favor, execute manualmente: sudo apt-get install -y python3-pip python3-flask python3-flask-cors${WHITE}\n"
+      fi
+    fi
+    
+    # Obter o caminho do site-packages do usuário
+    USER_SITE=\$(python3 -m site --user-site 2>/dev/null || echo "")
+    if [ -n "\$USER_SITE" ]; then
+      export PYTHONPATH="\$USER_SITE:\$PYTHONPATH"
+    fi
+    
+    # Determinar comando pip a usar
+    PIP_CMD="pip3"
+    if ! command -v pip3 &>/dev/null; then
+      if python3 -m pip --version &>/dev/null; then
+        PIP_CMD="python3 -m pip"
+        printf "${GREEN} >> Usando python3 -m pip como alternativa${WHITE}\n"
+      else
+        printf "${RED} >> ERRO: pip3 e python3 -m pip não estão disponíveis!${WHITE}\n"
+        printf "${YELLOW} >> Instale pip3 manualmente: sudo apt-get install -y python3-pip${WHITE}\n"
+        exit 1
+      fi
+    fi
+    
+    # Instalar dependências (usar --break-system-packages para ambientes externally managed)
+    if [ -f "\$TRANSC_DIR/requirements.txt" ]; then
+      printf "${GREEN} >> Instalando dependências do requirements.txt...${WHITE}\n"
+      # Tentar com --user primeiro
+      INSTALL_OUTPUT=\$(\$PIP_CMD install --user -r "\$TRANSC_DIR/requirements.txt" 2>&1)
+      INSTALL_STATUS=\$?
+      if [ \$INSTALL_STATUS -eq 0 ] || echo "\$INSTALL_OUTPUT" | grep -q "already satisfied\|Requirement already satisfied"; then
+        printf "${GREEN} >> ✓ Dependências instaladas${WHITE}\n"
+      elif echo "\$INSTALL_OUTPUT" | grep -q "externally-managed-environment"; then
+        # Se falhar por externally-managed, usar --break-system-packages com --user
+        printf "${YELLOW} >> Ambiente externally-managed detectado. Usando --break-system-packages...${WHITE}\n"
+        \$PIP_CMD install --user --break-system-packages -r "\$TRANSC_DIR/requirements.txt" 2>&1 | grep -v "already satisfied\|Requirement already satisfied" || true
+        printf "${GREEN} >> ✓ Dependências instaladas${WHITE}\n"
+      else
+        # Outro erro, mostrar e tentar com --break-system-packages
+        printf "${YELLOW} >> Erro na instalação. Tentando com --break-system-packages...${WHITE}\n"
+        \$PIP_CMD install --user --break-system-packages -r "\$TRANSC_DIR/requirements.txt" 2>&1 | grep -v "already satisfied\|Requirement already satisfied" || true
+        printf "${GREEN} >> ✓ Dependências instaladas${WHITE}\n"
+      fi
+    else
+      printf "${YELLOW} >> requirements.txt não encontrado. Instalando dependências básicas...${WHITE}\n"
+      # Tentar com --user primeiro
+      INSTALL_OUTPUT=\$(\$PIP_CMD install --user flask flask-cors requests 2>&1)
+      INSTALL_STATUS=\$?
+      if [ \$INSTALL_STATUS -eq 0 ] || echo "\$INSTALL_OUTPUT" | grep -q "already satisfied\|Requirement already satisfied"; then
+        printf "${GREEN} >> ✓ Dependências básicas instaladas${WHITE}\n"
+      elif echo "\$INSTALL_OUTPUT" | grep -q "externally-managed-environment"; then
+        # Se falhar por externally-managed, usar --break-system-packages com --user
+        printf "${YELLOW} >> Ambiente externally-managed detectado. Usando --break-system-packages...${WHITE}\n"
+        \$PIP_CMD install --user --break-system-packages flask flask-cors requests 2>&1 | grep -v "already satisfied\|Requirement already satisfied" || true
+        printf "${GREEN} >> ✓ Dependências básicas instaladas (Flask, Flask-CORS, Requests)${WHITE}\n"
+      else
+        # Outro erro, mostrar e tentar com --break-system-packages
+        printf "${YELLOW} >> Erro na instalação. Tentando com --break-system-packages...${WHITE}\n"
+        \$PIP_CMD install --user --break-system-packages flask flask-cors requests 2>&1 | grep -v "already satisfied\|Requirement already satisfied" || true
+        printf "${GREEN} >> ✓ Dependências básicas instaladas${WHITE}\n"
+      fi
+    fi
+    
+    # Atualizar USER_SITE após instalação
+    USER_SITE=\$(python3 -m site --user-site 2>/dev/null || echo "")
+    if [ -n "\$USER_SITE" ] && [ -d "\$USER_SITE" ]; then
+      export PYTHONPATH="\$USER_SITE:\$PYTHONPATH"
+      printf "${GREEN} >> PYTHONPATH configurado: \$USER_SITE${WHITE}\n"
+    fi
+    
+    # Verificar se Flask está instalado
+    if python3 -c "import flask" 2>/dev/null; then
+      printf "${GREEN} >> ✓ Flask está instalado e acessível${WHITE}\n"
+    else
+      printf "${RED} >> ERRO: Flask não está instalado! Tentando instalar novamente...${WHITE}\n"
+      # Tentar com --user primeiro
+      INSTALL_OUTPUT=\$(\$PIP_CMD install --user --force-reinstall flask 2>&1)
+      INSTALL_STATUS=\$?
+      if [ \$INSTALL_STATUS -eq 0 ] || echo "\$INSTALL_OUTPUT" | grep -q "already satisfied\|Requirement already satisfied"; then
+        printf "${GREEN} >> Flask reinstalado${WHITE}\n"
+      elif echo "\$INSTALL_OUTPUT" | grep -q "externally-managed-environment"; then
+        # Se falhar, usar --break-system-packages
+        printf "${YELLOW} >> Usando --break-system-packages...${WHITE}\n"
+        \$PIP_CMD install --user --break-system-packages --force-reinstall flask 2>&1 || true
+      else
+        # Tentar com --break-system-packages de qualquer forma
+        \$PIP_CMD install --user --break-system-packages --force-reinstall flask 2>&1 || true
+      fi
+      # Atualizar USER_SITE novamente
+      USER_SITE=\$(python3 -m site --user-site 2>/dev/null || echo "")
+      if [ -n "\$USER_SITE" ] && [ -d "\$USER_SITE" ]; then
+        export PYTHONPATH="\$USER_SITE:\$PYTHONPATH"
+      fi
+      # Verificar novamente
+      if python3 -c "import flask" 2>/dev/null; then
+        printf "${GREEN} >> ✓ Flask instalado com sucesso${WHITE}\n"
+      else
+        printf "${RED} >> ERRO: Ainda não foi possível importar Flask!${WHITE}\n"
+      fi
+    fi
+    echo
+INSTALLPYTHONDEP
+    
+    echo
+    sleep 2
+    
     # RESTAURAR o main.py atualizado imediatamente após o script
     # O script pode ter feito git checkout/reset que sobrescreveu o main.py
     if [ -f "$main_py_backup_protected" ]; then
@@ -3384,6 +3775,77 @@ PYTHON_FIX
       find "\$TRANSC_DIR" -name "*.pyc" -delete 2>/dev/null || true
       find "\$TRANSC_DIR" -name "*.pyo" -delete 2>/dev/null || true
       
+      # Instalar dependências Python
+      printf "${WHITE} >> Instalando dependências Python...${WHITE}\n"
+      
+      # Determinar comando pip a usar
+      PIP_CMD="pip3"
+      if ! command -v pip3 &>/dev/null; then
+        if python3 -m pip --version &>/dev/null; then
+          PIP_CMD="python3 -m pip"
+          printf "${GREEN} >> Usando python3 -m pip como alternativa${WHITE}\n"
+        else
+          printf "${YELLOW} >> AVISO: pip3 não está disponível. Tentando continuar...${WHITE}\n"
+        fi
+      fi
+      
+      # Obter o caminho do site-packages do usuário
+      USER_SITE=\$(python3 -m site --user-site 2>/dev/null || echo "")
+      
+      if [ -f "\$TRANSC_DIR/requirements.txt" ]; then
+        printf "${GREEN} >> Arquivo requirements.txt encontrado. Instalando dependências...${WHITE}\n"
+        # Tentar com --user primeiro
+        INSTALL_OUTPUT=\$(\$PIP_CMD install --user -r "\$TRANSC_DIR/requirements.txt" 2>&1)
+        INSTALL_STATUS=\$?
+        if [ \$INSTALL_STATUS -eq 0 ] || echo "\$INSTALL_OUTPUT" | grep -q "already satisfied\|Requirement already satisfied"; then
+          printf "${GREEN} >> ✓ Dependências instaladas${WHITE}\n"
+        elif echo "\$INSTALL_OUTPUT" | grep -q "externally-managed-environment"; then
+          printf "${YELLOW} >> Ambiente externally-managed detectado. Usando --break-system-packages...${WHITE}\n"
+          \$PIP_CMD install --user --break-system-packages -r "\$TRANSC_DIR/requirements.txt" 2>&1 | grep -v "already satisfied\|Requirement already satisfied" || true
+          printf "${GREEN} >> ✓ Dependências instaladas${WHITE}\n"
+        else
+          printf "${YELLOW} >> Tentando com --break-system-packages...${WHITE}\n"
+          \$PIP_CMD install --user --break-system-packages -r "\$TRANSC_DIR/requirements.txt" 2>&1 | grep -v "already satisfied\|Requirement already satisfied" || true
+          printf "${GREEN} >> ✓ Dependências instaladas${WHITE}\n"
+        fi
+      else
+        printf "${YELLOW} >> Arquivo requirements.txt não encontrado. Instalando dependências básicas...${WHITE}\n"
+        # Tentar com --user primeiro
+        INSTALL_OUTPUT=\$(\$PIP_CMD install --user flask flask-cors requests 2>&1)
+        INSTALL_STATUS=\$?
+        if [ \$INSTALL_STATUS -eq 0 ] || echo "\$INSTALL_OUTPUT" | grep -q "already satisfied\|Requirement already satisfied"; then
+          printf "${GREEN} >> ✓ Dependências básicas instaladas${WHITE}\n"
+        elif echo "\$INSTALL_OUTPUT" | grep -q "externally-managed-environment"; then
+          printf "${YELLOW} >> Ambiente externally-managed detectado. Usando --break-system-packages...${WHITE}\n"
+          \$PIP_CMD install --user --break-system-packages flask flask-cors requests 2>&1 | grep -v "already satisfied\|Requirement already satisfied" || true
+          printf "${GREEN} >> ✓ Dependências básicas instaladas (Flask, Flask-CORS, Requests)${WHITE}\n"
+        else
+          printf "${YELLOW} >> Tentando com --break-system-packages...${WHITE}\n"
+          \$PIP_CMD install --user --break-system-packages flask flask-cors requests 2>&1 | grep -v "already satisfied\|Requirement already satisfied" || true
+          printf "${GREEN} >> ✓ Dependências básicas instaladas${WHITE}\n"
+        fi
+      fi
+      
+      # Verificar se Flask está instalado e acessível
+      if python3 -c "import flask" 2>/dev/null; then
+        printf "${GREEN} >> ✓ Flask verificado e disponível${WHITE}\n"
+      else
+        printf "${RED} >> ERRO: Flask não está acessível! Tentando instalar novamente...${WHITE}\n"
+        INSTALL_OUTPUT=\$(\$PIP_CMD install --user --force-reinstall flask 2>&1)
+        INSTALL_STATUS=\$?
+        if [ \$INSTALL_STATUS -ne 0 ] || echo "\$INSTALL_OUTPUT" | grep -q "externally-managed-environment"; then
+          printf "${YELLOW} >> Usando --break-system-packages...${WHITE}\n"
+          \$PIP_CMD install --user --break-system-packages --force-reinstall flask 2>&1 || true
+        fi
+        # Tentar novamente após reinstalar
+        if python3 -c "import flask" 2>/dev/null; then
+          printf "${GREEN} >> ✓ Flask instalado com sucesso${WHITE}\n"
+        else
+          printf "${RED} >> ERRO: Ainda não foi possível importar Flask!${WHITE}\n"
+        fi
+      fi
+      echo
+      
       # Verificar que a porta está correta no main.py
       final_port=\$(grep -oP "port\s*=\s*\K\d+" "\$MAIN_PY_PATH" | head -1 || echo "")
       if [ "\$final_port" != "${porta_transcricao}" ]; then
@@ -3399,9 +3861,89 @@ PYTHON_FIX
       pm2 stop transc-${empresa} 2>/dev/null || true
       pm2 delete transc-${empresa} 2>/dev/null || true
       
-      # Iniciar PM2 com o arquivo correto
-      printf "${GREEN} >> Iniciando PM2...${WHITE}\n"
-      pm2 start "\$MAIN_PY_PATH" --name ${empresa}-transcricao --interpreter python3 --cwd "\$TRANSC_DIR"
+      # Obter o caminho do site-packages do usuário e configurar PYTHONPATH
+      USER_SITE=\$(python3 -m site --user-site 2>/dev/null || echo "")
+      if [ -n "\$USER_SITE" ] && [ -d "\$USER_SITE" ]; then
+        export PYTHONPATH="\$USER_SITE:\$PYTHONPATH"
+        printf "${GREEN} >> PYTHONPATH configurado: \$USER_SITE${WHITE}\n"
+      fi
+      
+      # Determinar comando pip a usar
+      PIP_CMD="pip3"
+      if ! command -v pip3 &>/dev/null; then
+        if python3 -m pip --version &>/dev/null; then
+          PIP_CMD="python3 -m pip"
+        fi
+      fi
+      
+      # Verificar Flask antes de iniciar
+      if ! python3 -c "import flask" 2>/dev/null; then
+        printf "${RED} >> ERRO: Flask não está disponível! Instalando...${WHITE}\n"
+        INSTALL_OUTPUT=\$(\$PIP_CMD install --user flask 2>&1)
+        INSTALL_STATUS=\$?
+        if [ \$INSTALL_STATUS -ne 0 ] || echo "\$INSTALL_OUTPUT" | grep -q "externally-managed-environment"; then
+          printf "${YELLOW} >> Usando --break-system-packages...${WHITE}\n"
+          \$PIP_CMD install --user --break-system-packages flask 2>&1 || true
+        fi
+        # Atualizar USER_SITE após instalação
+        USER_SITE=\$(python3 -m site --user-site 2>/dev/null || echo "")
+        if [ -n "\$USER_SITE" ] && [ -d "\$USER_SITE" ]; then
+          export PYTHONPATH="\$USER_SITE:\$PYTHONPATH"
+        fi
+      fi
+      
+      # Configurar PYTHONPATH antes de iniciar PM2
+      if [ -n "\$USER_SITE" ] && [ -d "\$USER_SITE" ]; then
+        export PYTHONPATH="\$USER_SITE:\$PYTHONPATH"
+        printf "${GREEN} >> PYTHONPATH configurado: \$USER_SITE${WHITE}\n"
+      fi
+      
+      # Verificar Flask uma última vez antes de iniciar
+      if ! python3 -c "import flask" 2>/dev/null; then
+        printf "${RED} >> ERRO CRÍTICO: Flask ainda não está disponível!${WHITE}\n"
+        printf "${YELLOW} >> Tentando instalação final...${WHITE}\n"
+        
+        # Tentar via pip primeiro
+        if [ -n "\$PIP_CMD" ] && command -v \$PIP_CMD &>/dev/null 2>&1; then
+          \$PIP_CMD install --user --break-system-packages flask flask-cors requests 2>&1 | grep -v "already satisfied\|Requirement already satisfied" || true
+        fi
+        
+        # Atualizar USER_SITE após instalação
+        USER_SITE=\$(python3 -m site --user-site 2>/dev/null || echo "")
+        if [ -n "\$USER_SITE" ] && [ -d "\$USER_SITE" ]; then
+          export PYTHONPATH="\$USER_SITE:\$PYTHONPATH"
+        fi
+        
+        # Verificar novamente
+        if ! python3 -c "import flask" 2>/dev/null; then
+          printf "${RED} >> ERRO: Não foi possível instalar Flask via pip!${WHITE}\n"
+          printf "${YELLOW} >> Por favor, execute manualmente: sudo apt-get install -y python3-flask python3-flask-cors${WHITE}\n"
+          printf "${YELLOW} >> Ou: sudo apt-get install -y python3-pip && pip3 install --user flask flask-cors${WHITE}\n"
+          printf "${RED} >> O PM2 será iniciado, mas falhará sem Flask instalado.${WHITE}\n"
+        else
+          printf "${GREEN} >> ✓ Flask instalado com sucesso!${WHITE}\n"
+        fi
+      fi
+      
+      # Criar script wrapper para garantir PYTHONPATH correto
+      WRAPPER_SCRIPT="\$TRANSC_DIR/run_transcricao.sh"
+      cat > "\$WRAPPER_SCRIPT" <<WRAPPEREOF
+#!/bin/bash
+cd "\$TRANSC_DIR"
+# Configurar PYTHONPATH
+USER_SITE=\$(python3 -m site --user-site 2>/dev/null || echo "")
+if [ -n "\$USER_SITE" ] && [ -d "\$USER_SITE" ]; then
+  export PYTHONPATH="\$USER_SITE:\$PYTHONPATH"
+fi
+# Executar o main.py
+exec python3 "\$MAIN_PY_PATH"
+WRAPPEREOF
+      chmod +x "\$WRAPPER_SCRIPT"
+      chown deploy:deploy "\$WRAPPER_SCRIPT" 2>/dev/null || true
+      
+      # Iniciar PM2 com o wrapper script
+      printf "${GREEN} >> Iniciando PM2 com wrapper script (garante PYTHONPATH correto)...${WHITE}\n"
+      pm2 start "\$WRAPPER_SCRIPT" --name ${empresa}-transcricao --interpreter bash --cwd "\$TRANSC_DIR"
       pm2 save --force
       
       # Verificar se iniciou corretamente
@@ -3462,8 +4004,31 @@ STARTPM2CORRECT
   printf "${GREEN} >> Porta configurada: ${BLUE}${porta_transcricao}${WHITE}\n"
   printf "${GREEN} >> Instância: ${BLUE}${empresa}${WHITE}\n"
   echo
-  printf "${YELLOW} >> IMPORTANTE: Verifique se o serviço está rodando na porta correta${WHITE}\n"
+  
+  # Verificar se Flask está realmente instalado
+  if ! sudo su - deploy -c "python3 -c 'import flask'" 2>/dev/null; then
+    printf "${RED}══════════════════════════════════════════════════════════════════${WHITE}\n"
+    printf "${RED} >> ATENÇÃO: Flask não está instalado!${WHITE}\n"
+    printf "${RED}══════════════════════════════════════════════════════════════════${WHITE}\n"
+    echo
+    printf "${YELLOW} >> Para instalar Flask manualmente, execute:${WHITE}\n"
+    printf "${BLUE}    sudo apt-get update${WHITE}\n"
+    printf "${BLUE}    sudo apt-get install -y python3-pip python3-flask python3-flask-cors${WHITE}\n"
+    echo
+    printf "${YELLOW} >> Ou se preferir usar pip:${WHITE}\n"
+    printf "${BLUE}    sudo apt-get install -y python3-pip${WHITE}\n"
+    printf "${BLUE}    pip3 install --user --break-system-packages flask flask-cors requests${WHITE}\n"
+    echo
+    printf "${YELLOW} >> Após instalar, reinicie o serviço:${WHITE}\n"
+    printf "${BLUE}    sudo su - deploy -c 'pm2 restart ${empresa}-transcricao'${WHITE}\n"
+    echo
+  else
+    printf "${GREEN} >> ✓ Flask está instalado e disponível${WHITE}\n"
+  fi
+  
+  printf "${YELLOW} >> IMPORTANTE: Verifique se o serviço está rodando corretamente${WHITE}\n"
   printf "${YELLOW} >> Use: pm2 list (para ver processos)${WHITE}\n"
+  printf "${YELLOW} >> Use: pm2 logs ${empresa}-transcricao (para ver logs)${WHITE}\n"
   printf "${YELLOW} >> Use: lsof -i:${porta_transcricao} (para verificar a porta)${WHITE}\n"
   echo
   printf "${WHITE} >> Pressione Enter para voltar ao menu...${WHITE}\n"
@@ -3504,10 +4069,10 @@ atualizar_api_oficial() {
   sleep 2
 }
 
-# Adicionar função para migrar para multiflow
+# Adicionar função para migrar para Multiflow
 migrar_multiflow_pro() {
   banner
-  printf "${WHITE} >> Migrando para multiflow...\n"
+  printf "${WHITE} >> Migrando para Multiflow...\n"
   echo
   local script_path="$(pwd)/atualizador_pro.sh"
   if [ -f "$script_path" ]; then
@@ -3518,7 +4083,7 @@ migrar_multiflow_pro() {
     printf "${RED} >> Certifique-se de que o arquivo atualizador_pro.sh está no mesmo diretório do instalador.${WHITE}\n"
     sleep 2
   fi
-  printf "${GREEN} >> Processo de migração para multiflow finalizado. Voltando ao menu...${WHITE}\n"
+  printf "${GREEN} >> Processo de migração para Multiflow finalizado. Voltando ao menu...${WHITE}\n"
   sleep 2
 }
 
