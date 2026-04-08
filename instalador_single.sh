@@ -1007,39 +1007,23 @@ confirma_dados_instalacao_base() {
   fi
 }
 
-# Atualiza sistema operacional
+# Atualiza sistema operacional - VERSÃO BLINDADA DEFINITIVA
 atualiza_vps_base() {
   banner
-  printf "${WHITE} >> Atualizando sistema operacional...\n"
+  printf "${WHITE} >> Atualizando sistema operacional (Ignorando teste de Ping)...\n"
   echo
   
-  # Verificar conectividade antes de atualizar
-  if ! verificar_conectividade; then
-    printf "${YELLOW} >> Tentando corrigir problemas de DNS...${WHITE}\n"
-    tentar_corrigir_dns
-    
-    # Verificar novamente
-    if ! verificar_conectividade; then
-      printf "${RED} >> ERRO: Problemas de conectividade não resolvidos.${WHITE}\n"
-      printf "${YELLOW} >> Por favor, resolva os problemas de rede antes de continuar.${WHITE}\n"
-      trata_erro "atualiza_vps_base"
-    fi
-  fi
+  # Força o sistema a usar IPv4 (que funciona) e desliga interrupções
+  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+  export DEBIAN_FRONTEND=noninteractive
+  sudo apt-get remove -y needrestart >/dev/null 2>&1
   
   UPDATE_FILE="$(pwd)/update.x"
   {
-    # Tentar atualizar, se falhar, corrigir DNS e tentar novamente
-    if ! sudo DEBIAN_FRONTEND=noninteractive apt update -y; then
-      printf "${YELLOW} >> Erro ao atualizar. Tentando corrigir DNS e tentar novamente...${WHITE}\n"
-      tentar_corrigir_dns
-      if ! sudo DEBIAN_FRONTEND=noninteractive apt update -y; then
-        printf "${RED} >> ERRO: Falha ao atualizar lista de pacotes após correções.${WHITE}\n"
-        printf "${YELLOW} >> Verifique sua conexão de internet e configuração de DNS.${WHITE}\n"
-        trata_erro "atualiza_vps_base"
-      fi
-    fi
-    
-    sudo DEBIAN_FRONTEND=noninteractive apt upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" && sudo DEBIAN_FRONTEND=noninteractive apt-get install build-essential -y && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y apparmor-utils
+    sudo DEBIAN_FRONTEND=noninteractive apt update -y
+    sudo DEBIAN_FRONTEND=noninteractive apt upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install build-essential -y
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y apparmor-utils
     touch "${UPDATE_FILE}"
     sleep 2
   } || trata_erro "atualiza_vps_base"
